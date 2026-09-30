@@ -7,35 +7,37 @@ export const config = {
     port: number(process.env.MAIL_PORT, 995),
     tls: boolean(process.env.MAIL_TLS, true),
     rejectUnauthorized: boolean(process.env.MAIL_REJECT_UNAUTHORIZED, true),
+    timeoutMs: number(process.env.MAIL_TIMEOUT_MS, 30_000),
   },
 };
 
-function number(
-  value: string | undefined,
-  defaultValue: any = undefined
-): number | undefined {
+export function number(value: string | undefined, defaultValue: number): number {
   if (!value) {
     return defaultValue;
   }
 
-  try {
-    return parseInt(value, 10);
-  } catch (error) {
-    return defaultValue;
-  }
+  const parsed = parseInt(value, 10);
+
+  return Number.isNaN(parsed) ? defaultValue : parsed;
 }
 
-function boolean(
+export function boolean(
   value: string | undefined,
-  defaultValue: any = undefined
-): boolean | undefined {
+  defaultValue: boolean
+): boolean {
   if (!value) {
     return defaultValue;
   }
 
-  try {
-    JSON.stringify(value);
-  } catch (error) {
-    return defaultValue;
+  const normalized = value.trim().toLowerCase();
+
+  if (["true", "1", "yes"].includes(normalized)) {
+    return true;
   }
+
+  if (["false", "0", "no"].includes(normalized)) {
+    return false;
+  }
+
+  return defaultValue;
 }

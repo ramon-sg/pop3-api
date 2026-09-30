@@ -6,6 +6,7 @@ import { PASSWORD_KEY, USERNAME_KEY } from "./constants";
 
 Bun.serve({
   port: config.port,
+  idleTimeout: 0,
   async fetch(req) {
     if (req.method === "OPTIONS") {
       return ok("Departed");
@@ -23,7 +24,7 @@ Bun.serve({
       username,
     });
 
-    return error ? nok(error.message) : ok(mails);
+    return error ? nok(error.message, { status: error.status }) : ok(mails);
   },
 });
 

@@ -16,6 +16,16 @@ export type Attachment = {
 };
 
 export type Mail = {
+  /** Unique id of the message in the POP3 mailbox (`UIDL`). */
+  uidl?: string;
+  /**
+   * Set when the message was downloaded but could not be read (empty or
+   * unparseable). The message is still returned so it is never lost silently.
+   */
+  error?: string;
+  /** Raw headers of the message, only present when `error` is set. */
+  headers?: string;
+
   from?: Address;
   to?: Address[];
   subject?: string;
@@ -27,9 +37,14 @@ export type Mail = {
   bcc?: Address[];
   replyTo?: Address[];
   inReplyTo?: string;
-  messageId: string;
+  messageId?: string;
   returnPath?: string;
   deliveredTo?: string;
   date?: string;
   attachments: Attachment[];
 };
+
+export type MailSummary = Pick<
+  Mail,
+  "uidl" | "messageId" | "to" | "subject" | "date" | "error"
+>;
