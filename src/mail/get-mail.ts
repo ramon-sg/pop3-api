@@ -208,9 +208,10 @@ function watchClose(pop3: Pop3Client): { run: Run; stop(): void } {
     pop3.on?.("warn", (err) => {
       if (stopped) return;
 
-      // The library's idle timeout warns `timeout` and then closes the socket:
-      // report the timeout, not the close it causes.
-      if (err.eventName === "timeout") {
+      // The library warns the cause (`timeout`, a socket `error` such as a DNS
+      // failure) and then closes the socket: report the cause, not the close.
+      // The first warning wins.
+      if (err.eventName === "timeout" || err.eventName === "error") {
         reject(toPollError(err));
       } else if (err.eventName === "end" || err.eventName === "close") {
         reject(new PollError("POP3 server closed the connection", 502));

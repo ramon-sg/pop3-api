@@ -221,6 +221,25 @@ describe("getMail", () => {
     expect(error!.status).toBe(504);
   });
 
+  test("a socket error is reported with its cause, not as the close it causes", async () => {
+    const { client } = fakeClient({ messages: [] });
+    client.UIDL = () => {
+      setTimeout(() => {
+        const dns = Object.assign(new Error("getaddrinfo ETIMEOUT pop.gmail.com"), {
+          eventName: "error",
+        });
+        client.emit("warn", dns);
+        client.emit("warn", Object.assign(new Error("close"), { eventName: "close" }));
+      }, 5);
+      return new Promise(() => {});
+    };
+
+    const [error] = await getMail(credentials, () => client);
+
+    expect(error!.status).toBe(502);
+    expect(error!.message).toBe("getaddrinfo ETIMEOUT pop.gmail.com");
+  });
+
   test("the close that follows QUIT is not an error", async () => {
     const { client, calls } = fakeClient({ messages: [raw("Welcome")] });
     client.QUIT = async () => {
