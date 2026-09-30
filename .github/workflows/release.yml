@@ -47,8 +47,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tarball="client/pop3-api-client-${GITHUB_REF_NAME#v}.tgz"
+          # Never replace a published tarball: consumers pin its integrity hash
+          # in their lockfile. A fix needs a new version.
+          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' 2>/dev/null \
+              | grep -qx "$(basename "$tarball")"; then
+            echo "$(basename "$tarball") is already published in $GITHUB_REF_NAME"
+            exit 1
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$tarball" --clobber
+            gh release upload "$GITHUB_REF_NAME" "$tarball"
           else
             gh release create "$GITHUB_REF_NAME" "$tarball" --title "$GITHUB_REF_NAME" --generate-notes
           fi

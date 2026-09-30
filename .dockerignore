@@ -1,4 +1,4 @@
-node_modules
+**/node_modules
 Dockerfile*
 docker-compose*
 .dockerignore
@@ -12,6 +12,7 @@ helm-charts
 .env
 .editorconfig
 .idea
-coverage*sclient
+coverage*s
+client
 test
 .github

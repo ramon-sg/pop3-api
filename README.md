@@ -16,6 +16,7 @@ bun install
 To run:
 
 ```bash
+bun run build
 bun run start
 ```
 
@@ -25,18 +26,19 @@ To test:
 bun run test
 ```
 
-# Configuration:
+# Configuration
 To configure the server, you can use the following environment variables:
 - `MAIL_PORT`: the port the server will connect to. Default is 995.
 - `MAIL_HOST`: the host the server will connect to. Default is `pop.gmail.com`.
 - `MAIL_TLS`: if the client will use TLS (`true`/`false`). Default is `true`.
 - `MAIL_REJECT_UNAUTHORIZED`: if the client will reject unauthorized certificates (`true`/`false`). Default is `true`.
 - `MAIL_TIMEOUT_MS`: max time to wait for each POP3 command. Default is `30000`.
+  Downloading a message (`RETR`) gets 1 extra ms per 50 bytes of its size, so a large message on a slow link is not cut.
 - `LOG_LEVEL`: the log level of the server (`debug`, `info`, `warn`, `error`, `off`). Default is `info`.
   `info` logs a summary per email (`uidl`, `messageId`, `to`, `subject`, `date`); full bodies are only logged in `debug`.
 - `PORT`: the port the server will listen to. Default is 3000.
 
-# pop3-api
+# Usage
 To obtain the emails it is necessary to make a query to `/` with the following headers:
 - `X-POP3-USERNAME`: the email you want to check
 - `X-POP3-PASSWORD`: the password of the email you want to check
@@ -50,9 +52,15 @@ Gmail marks them as downloaded: the next poll will not return them again. Keep
 every email you receive, not only the one you are looking for — the
 [client](#client-for-e2e-tests) does this for you.
 
-If a poll fails midway (auth error, timeout, dropped connection) the session is
-closed **without** `QUIT`, so Gmail does not mark anything as downloaded and the
-emails come back in the next poll.
+If a poll fails midway (auth error, timeout, dropped connection) **or the HTTP
+caller goes away** before the response is sent, the session is closed
+**without** `QUIT`, so Gmail does not mark anything as downloaded and the emails
+come back in the next poll.
+
+> **One consumer per inbox.** Two processes polling the same inbox (two CI runs,
+> a CI run and a local run, several Playwright workers with their own mailbox…)
+> take each other's emails: whoever polls first gets them. Use one Gmail account
+> per concurrent consumer.
 
 ## Success response
 
@@ -77,9 +85,11 @@ emails come back in the next poll.
 ```
 
 **Note**: You can see the full attributes of the mail in `Mail` type in `src/mail/types.ts`.
+Attachment `content` is base64 encoded.
 
-An email that was downloaded but could not be read (empty or unparseable) is
-still returned, with `error` and its raw `headers`, instead of being dropped:
+An email that was downloaded but could not be read (empty, unparseable, or
+`RETR` answered `-ERR`) is still returned with `error` instead of being dropped.
+When there are raw headers, they come in `headers`:
 
 ```json
 { "uidl": "GmailId…", "error": "Unparseable message: …", "headers": "Subject: …", "attachments": [] }
@@ -98,7 +108,7 @@ still returned, with `error` and its raw `headers`, instead of being dropped:
 | Status | When |
 | ------ | ---- |
 | 400 | Missing `X-POP3-USERNAME` or `X-POP3-PASSWORD` |
-| 502 | The POP3 server failed (e.g. `-ERR [AUTH] …`, connection refused) |
+| 502 | The POP3 server failed (e.g. `-ERR [AUTH] …`, connection refused, DNS error) |
 | 504 | The POP3 server did not answer within `MAIL_TIMEOUT_MS` |
 
 
@@ -121,6 +131,11 @@ Dependency-free library to wait for emails from tests. It polls `pop3-api`,
 keeps in memory **every** email it receives (not only the one you are waiting
 for) and waits until one matches your filter.
 
+Requires Node >= 20.19 (or Bun). It is an ES module that can also be
+`require`d, so it works in CommonJS Playwright projects. For TypeScript use
+`moduleResolution` `bundler`, `nodenext` or `node`; `node16` in a CommonJS
+project rejects importing an ES module.
+
 ## Installation
 
 It is not published to npm. Install it from the GitHub Release:
@@ -135,12 +150,13 @@ pnpm add -D https://github.com/ramon-sg/pop3-api/releases/download/v0.0.3/pop3-a
 import { createMailbox } from 'pop3-api-client';
 
 const mailbox = createMailbox({
-  url: 'http://localhost:3033',          // where pop3-api runs
+  url: 'http://localhost:3000',          // where pop3-api runs
   username: 'tests@gmail.com',
   password: process.env.TEST_EMAIL_PASSWORD!,
 });
 
 // 1. A unique address for this test: tests+k3j9x0a1b2-1727712000000@gmail.com
+//    (mailbox.alias('signup') → tests+signup-k3j9x0a1b2-1727712000000@gmail.com)
 const to = mailbox.alias();
 
 // 2. Do something that sends an email to that address
@@ -158,6 +174,8 @@ mail.html;             // the full HTML
 
 Every field is optional and they are combined with AND. Each one accepts a
 string (exact match; addresses ignore case), a RegExp or a function.
+`to` matches any address in `to`, `cc`, `bcc` or `Delivered-To` (where an alias
+sent as BCC shows up).
 
 ```ts
 await mailbox.waitFor({
@@ -172,6 +190,11 @@ await mailbox.waitFor({
 
 Unreadable emails (the ones with `error`) never match.
 
+**`waitFor` returns each email at most once.** Waiting again with the same filter
+(e.g. after clicking "resend code") gets the next email, never the one you
+already have. `find`, `all` and the fields of the returned `Mail` still let you
+read any email again.
+
 ## Wait options
 
 ```ts
@@ -184,8 +207,15 @@ await mailbox.waitFor(filter, {
 createMailbox({ url, username, password, wait: { timeout: 200_000 } });
 ```
 
-The timeout is checked between polls: a poll in progress is never aborted,
-because the emails it brings would be lost.
+At the timeout `waitFor` stops waiting, but a poll in progress keeps running in
+the background and its emails are stored for the next `waitFor`. A single
+request to `pop3-api` is aborted after `requestTimeout` (default 120 s,
+`createMailbox({ …, requestTimeout })`); `pop3-api` then closes the POP3 session
+without `QUIT`, so nothing is lost.
+
+Playwright's default test timeout (30 s) is shorter than the default `waitFor`
+timeout (60 s): raise it with `test.setTimeout()` or pass a shorter `timeout`,
+otherwise the test is killed before the readable error below.
 
 If the email does not arrive it throws a readable error:
 
@@ -196,19 +226,20 @@ Mailbox has 3 mails (0 unreadable).
 Last API error: none
 ```
 
-Transient errors (network, 502, 504) are retried. Bad credentials
-(`-ERR [AUTH]`) or a 4xx fail right away with a `MailboxError` instead of
-waiting for the timeout.
+Transient errors (network, 5xx, 408, 429) are retried. Bad credentials
+(`-ERR [AUTH]`) and any other 4xx (e.g. a wrong URL) fail right away with a
+`MailboxError` instead of waiting for the timeout. `createMailbox` throws right
+away if `url`, `username` or `password` is empty.
 
 ## Links and codes
 
 ```ts
 const mail = await mailbox.waitFor({ to, subject: /verifica/i });
 
-const [verifyUrl] = mailbox.links(mail, /\/verify/); // hrefs of the HTML that match
+const [verifyUrl] = mailbox.links(mail, /\/verify/); // hrefs of the HTML (or URLs of the text) that match
 await page.goto(verifyUrl!);
 
-const code = mailbox.code(mail);                      // first 6 digit code
+const code = mailbox.code(mail);                      // first 6 digit code of the text (or HTML without CSS/scripts)
 const pin = mailbox.code(mail, /PIN: (\d{4})/);       // or your own pattern (1st group)
 ```
 
@@ -216,7 +247,7 @@ const pin = mailbox.code(mail, /PIN: (\d{4})/);       // or your own pattern (1s
 
 ```ts
 mailbox.all();           // every email received so far (copy)
-mailbox.find(filter);    // searches in memory without polling; Mail | undefined
+mailbox.find(filter);    // searches in memory without polling (every email); Mail | undefined
 await mailbox.poll();    // polls now and returns the new emails
 mailbox.clear();         // forgets the emails in memory
 ```
@@ -224,8 +255,10 @@ mailbox.clear();         // forgets the emails in memory
 ## Playwright
 
 A ready to use fixture is included. The mailbox is **worker scoped**: it lives
-for the whole run, so an email that arrived during one test is still there for
-the next ones.
+for the whole worker, so an email that arrived during one test is still there
+for the next ones. Each worker has its own mailbox and they compete for the
+same inbox (see [one consumer per inbox](#each-email-is-delivered-only-once)):
+use `workers: 1` for the email tests, or one inbox per worker.
 
 ```ts
 // fixtures.ts
@@ -297,7 +330,7 @@ docker push ramonsoto/pop3-api:v0.0.3
 
 ## Generate a password for the app, follow the steps below:
 - activate the 2-step verification in your account.
-- Go to the next link: [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppassword)
+- Go to the next link: [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
 
 ## Activate pop3 and disable imap, follow the steps below:
 - Go to the next link: [https://mail.google.com/mail/u/0/#settings/fwdandpop](https://mail.google.com/mail/u/0/#settings/fwdandpop)
