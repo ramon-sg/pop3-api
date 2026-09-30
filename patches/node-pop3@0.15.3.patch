@@ -1,0 +1,38 @@
+diff --git a/lib/Connection.cjs b/lib/Connection.cjs
+index 6c583279a12beafd30d498994a2cc00c7559d33e..279161c7dd9236a1cb1c442e3f14a92752e78182 100644
+--- a/lib/Connection.cjs
++++ b/lib/Connection.cjs
+@@ -216,6 +216,13 @@ class Pop3Connection extends EventEmitter {
+         };
+         // @ts-expect-error Works
+         this._socket = _tls.connect(options);
++        // pop3-api patch: forward raw socket errors to the TLS socket.
++        const tlsSocket = this._socket;
++        socket.on('error', (err) => {
++          if (!tlsSocket.destroyed) {
++            tlsSocket.destroy(err);
++          }
++        });
+       } else {
+         this._socket = socket;
+       }
+diff --git a/src/Connection.js b/src/Connection.js
+index c5c6c13214d262f6dda3ff5f6a25e4d0d4af6acd..9d7e8334974757d035ed1d40c94afc971ff73b71 100644
+--- a/src/Connection.js
++++ b/src/Connection.js
+@@ -234,6 +234,15 @@ class Pop3Connection extends EventEmitter {
+         const options = {host, port, socket, servername, ...tlsOptions};
+         // @ts-expect-error Works
+         this._socket = _tls.connect(options);
++        // pop3-api patch: errors of the raw socket (DNS, ECONNREFUSED) are
++        //   not always forwarded to the TLS socket (e.g. under Bun), and an
++        //   `error` event without listener crashes the process.
++        const tlsSocket = this._socket;
++        socket.on('error', (err) => {
++          if (!tlsSocket.destroyed) {
++            tlsSocket.destroy(err);
++          }
++        });
+       } else {
+         this._socket = socket;
+       }
