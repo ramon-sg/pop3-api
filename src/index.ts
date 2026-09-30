@@ -22,6 +22,7 @@ Bun.serve({
     const [error, mails] = await getMail({
       password,
       username,
+      signal: req.signal,
     });
 
     return error ? nok(error.message, { status: error.status }) : ok(mails);

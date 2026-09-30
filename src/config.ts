@@ -1,5 +1,7 @@
+const LOG_LEVELS = ["all", "trace", "debug", "info", "warn", "error", "fatal", "off"];
+
 export const config = {
-  logLevel: process.env.LOG_LEVEL || "info",
+  logLevel: logLevel(process.env.LOG_LEVEL, "info"),
   port: number(process.env.PORT, 3000),
 
   mail: {
@@ -11,14 +13,18 @@ export const config = {
   },
 };
 
+/**
+ * @description A positive integer, or the default. Partial values like `30s`
+ * are rejected instead of being read as `30`.
+ */
 export function number(value: string | undefined, defaultValue: number): number {
-  if (!value) {
+  if (!value || !/^\d+$/.test(value.trim())) {
     return defaultValue;
   }
 
   const parsed = parseInt(value, 10);
 
-  return Number.isNaN(parsed) ? defaultValue : parsed;
+  return parsed > 0 ? parsed : defaultValue;
 }
 
 export function boolean(
@@ -40,4 +46,14 @@ export function boolean(
   }
 
   return defaultValue;
+}
+
+/**
+ * @description log4js silently turns logging OFF on an unknown level, so a
+ * typo would hide even errors.
+ */
+export function logLevel(value: string | undefined, defaultValue: string): string {
+  const normalized = value?.trim().toLowerCase();
+
+  return normalized && LOG_LEVELS.includes(normalized) ? normalized : defaultValue;
 }

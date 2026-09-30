@@ -16,13 +16,16 @@ const raw = (subject: string, to = "user+a@gmail.com") =>
 
 type FakeOptions = {
   messages: (string | Error | (() => Promise<string>))[];
+  sizes?: number[];
 };
 
-function fakeClient({ messages }: FakeOptions) {
+function fakeClient({ messages, sizes = [] }: FakeOptions) {
   const calls = { quit: 0, destroyed: 0, retr: [] as number[] };
 
   const client: Pop3Client = {
     UIDL: async () => messages.map((_, i) => [String(i + 1), `uid-${i + 1}`]),
+    LIST: async () =>
+      messages.map((_, i) => [String(i + 1), String(sizes[i] ?? 100)]),
     RETR: async (msgNum: number) => {
       calls.retr.push(msgNum);
       const message = messages[msgNum - 1];
@@ -117,6 +120,69 @@ describe("getMail", () => {
     expect(mails![1]).toMatchObject({ uidl: "uid-2", error: "Empty message" });
     expect(mails![2]!.subject).toBe("Bye");
     expect(calls.quit).toBe(1);
+  });
+
+  test("a -ERR for one message is returned with error and the poll goes on", async () => {
+    const serverError = Object.assign(new Error("Message deleted"), {
+      eventName: "error",
+      command: "RETR 2",
+    });
+    const { calls, create } = fakeClient({
+      messages: [raw("Welcome"), serverError, raw("Bye")],
+    });
+
+    const [error, mails] = await getMail(credentials, create);
+
+    expect(error).toBeNull();
+    expect(mails!.map((m) => [m.uidl, m.subject ?? m.error])).toEqual([
+      ["uid-1", "Welcome"],
+      ["uid-2", "RETR failed: Message deleted"],
+      ["uid-3", "Bye"],
+    ]);
+    expect(calls.quit).toBe(1);
+  });
+
+  test("a large message gets more time than a command", async () => {
+    const previous = config.mail.timeoutMs;
+    config.mail.timeoutMs = 20;
+
+    try {
+      // 5 KB → 20 ms + 100 ms; the message takes 60 ms.
+      const slow = () =>
+        new Promise<string>((resolve) => setTimeout(() => resolve(raw("Big")), 60));
+      const { calls, create } = fakeClient({ messages: [slow], sizes: [5_000] });
+
+      const [error, mails] = await getMail(credentials, create);
+
+      expect(error).toBeNull();
+      expect(mails![0]!.subject).toBe("Big");
+      expect(calls.quit).toBe(1);
+    } finally {
+      config.mail.timeoutMs = previous;
+    }
+  });
+
+  test("an aborted request closes the session without QUIT", async () => {
+    const controller = new AbortController();
+    const { calls, create } = fakeClient({
+      messages: [
+        raw("Welcome"),
+        async () => {
+          controller.abort();
+          return raw("Bye");
+        },
+      ],
+    });
+
+    const [error, mails] = await getMail(
+      { ...credentials, signal: controller.signal },
+      create
+    );
+
+    expect(mails).toBeNull();
+    expect(error!.message).toBe("Request aborted by the client");
+    expect(calls.quit).toBe(0);
+    expect(calls.destroyed).toBe(1);
   });
 
   test("a failed QUIT still returns the downloaded messages", async () => {

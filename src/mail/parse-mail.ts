@@ -35,7 +35,11 @@ export async function parseMail(
       returnPath: parsedMail.returnPath,
       deliveredTo: parsedMail.deliveredTo,
       date: parsedMail.date,
-      attachments: parsedMail.attachments as Mail["attachments"],
+      attachments: parsedMail.attachments.map((attachment) => ({
+        ...attachment,
+        // An ArrayBuffer serializes to `{}` in JSON.
+        content: Buffer.from(attachment.content as ArrayBuffer).toString("base64"),
+      })),
     };
   } catch (err) {
     return errorMail(raw, uidl, `Unparseable message: ${(err as Error).message}`);

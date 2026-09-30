@@ -19,7 +19,10 @@
   },
   "dependencies": {
     "log4js": "^6.9.1",
-    "node-pop3": "^0.15.3",
+    "node-pop3": "0.15.3",
     "postal-mime": "^2.2.8"
+  },
+  "patchedDependencies": {
+    "node-pop3@0.15.3": "patches/node-pop3@0.15.3.patch"
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { boolean, number } from "../src/config";
+import { boolean, logLevel, number } from "../src/config";
 
 describe("boolean", () => {
   test.each([
@@ -26,5 +26,20 @@ describe("number", () => {
     expect(number("995", 1)).toBe(995);
     expect(number(undefined, 3000)).toBe(3000);
     expect(number("abc", 3000)).toBe(3000);
+  });
+
+  test("rejects partial, zero and negative values", () => {
+    expect(number("30s", 30_000)).toBe(30_000);
+    expect(number("0", 30_000)).toBe(30_000);
+    expect(number("-5", 30_000)).toBe(30_000);
+  });
+});
+
+describe("logLevel", () => {
+  test("accepts known levels in any case and falls back otherwise", () => {
+    expect(logLevel("DEBUG", "info")).toBe("debug");
+    expect(logLevel("off", "info")).toBe("off");
+    expect(logLevel("inf", "info")).toBe("info");
+    expect(logLevel(undefined, "info")).toBe("info");
   });
 });

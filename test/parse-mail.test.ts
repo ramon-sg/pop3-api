@@ -18,6 +18,31 @@ describe("parseMail", () => {
     expect(mail.error).toBeUndefined();
   });
 
+  test("attachments are base64 so they survive JSON", async () => {
+    const mail = await parseMail(
+      [
+        "Subject: File",
+        'Content-Type: multipart/mixed; boundary="b"',
+        "",
+        "--b",
+        "Content-Type: text/plain",
+        "",
+        "see attached",
+        "--b",
+        'Content-Type: text/plain; name="a.txt"',
+        "Content-Disposition: attachment; filename=a.txt",
+        "Content-Transfer-Encoding: base64",
+        "",
+        "aGVsbG8=",
+        "--b--",
+      ].join("\r\n")
+    );
+
+    expect(mail.attachments).toHaveLength(1);
+    expect(mail.attachments[0]!.content).toBe("aGVsbG8=");
+    expect(JSON.parse(JSON.stringify(mail)).attachments[0].content).toBe("aGVsbG8=");
+  });
+
   test("an empty message is returned with error", async () => {
     expect(await parseMail("", "uid-1")).toMatchObject({
       uidl: "uid-1",

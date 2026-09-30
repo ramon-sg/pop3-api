@@ -12,7 +12,8 @@ export type Attachment = {
   description?: string;
   contentId?: string;
   method?: string;
-  content: ArrayBuffer;
+  /** Base64 encoded content. */
+  content: string;
 };
 
 export type Mail = {

@@ -55,5 +55,5 @@ export function nok(error: string, options: Options = {}) {
     error,
   };
 
-  return response(result, { status: 500, ...options });
+  return response(result, { ...options, status: options.status ?? 500 });
 }
