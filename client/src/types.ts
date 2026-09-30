@@ -16,7 +16,8 @@ export type Attachment = {
   description?: string;
   contentId?: string;
   method?: string;
-  content: unknown;
+  /** Base64 encoded content (pop3-api >= 0.0.3). */
+  content: string;
 };
 
 export type Mail = {
@@ -57,7 +58,7 @@ export type Matcher = string | RegExp | ((value: string) => boolean);
 
 /** Every field is optional; the given ones are combined with AND. */
 export type MailFilter = {
-  /** Matches if any recipient in `to` matches. */
+  /** Matches if any recipient in `to`, `cc`, `bcc` or `Delivered-To` matches. */
   to?: Matcher;
   from?: Matcher;
   subject?: Matcher;
@@ -68,7 +69,7 @@ export type MailFilter = {
 };
 
 export type WaitOptions = {
-  /** Total ms before failing. Checked between polls. Default 60_000. */
+  /** Total ms before failing. Default 60_000. */
   timeout?: number;
   /** Ms between polls. Default 5_000. */
   interval?: number;
@@ -81,6 +82,12 @@ export type MailboxOptions = {
   password: string;
   /** Defaults for every `waitFor`. */
   wait?: WaitOptions;
+  /**
+   * Max ms for one request to pop3-api. Default 120_000. pop3-api >= 0.0.3
+   * closes the POP3 session without `QUIT` when the request is aborted, so no
+   * mail is lost.
+   */
+  requestTimeout?: number;
   /** Custom fetch, mainly for tests. */
   fetch?: typeof fetch;
 };

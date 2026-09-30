@@ -6,7 +6,7 @@ export function matches(mail: Mail, filter: MailFilter): boolean {
   }
 
   return (
-    matchAny(addresses(mail.to), filter.to, true) &&
+    matchAny(recipients(mail), filter.to, true) &&
     matchAny(addresses(mail.from ? [mail.from] : []), filter.from, true) &&
     matchAny([mail.subject], filter.subject) &&
     matchAny([mail.text], filter.text) &&
@@ -42,11 +42,32 @@ function matchAny(
   return values.some((value) => {
     if (value == null) return false;
     if (typeof matcher === "function") return matcher(value);
-    if (matcher instanceof RegExp) return new RegExp(matcher).test(value);
+    if (matcher instanceof RegExp) return toRegExp(matcher).test(value);
     return ignoreCase
       ? value.toLowerCase() === matcher.toLowerCase()
       : value === matcher;
   });
+}
+
+/**
+ * @description Copy of a RegExp without `g` and `y`: both make `test`/`match`
+ * depend on `lastIndex`, so a reused RegExp would skip matches.
+ */
+export function toRegExp(regExp: RegExp): RegExp {
+  return new RegExp(regExp.source, regExp.flags.replace(/[gy]/g, ""));
+}
+
+/**
+ * @description Every address the mail was delivered to: `to`, `cc`, `bcc` and
+ * `Delivered-To` (the only place an alias shows up when it was sent as BCC).
+ */
+function recipients(mail: Mail): (string | undefined)[] {
+  return [
+    ...addresses(mail.to),
+    ...addresses(mail.cc),
+    ...addresses(mail.bcc),
+    mail.deliveredTo,
+  ];
 }
 
 function addresses(list: Mail["to"] = []): (string | undefined)[] {

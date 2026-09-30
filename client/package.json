@@ -9,15 +9,27 @@
     "url": "https://github.com/ramon-sg/pop3-api.git",
     "directory": "client"
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "playwright": [
+        "./dist/playwright.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./dist/index.js"
     },
     "./playwright": {
       "types": "./dist/playwright.d.ts",
-      "import": "./dist/playwright.js"
+      "default": "./dist/playwright.js"
     }
+  },
+  "engines": {
+    "node": ">=20.19"
   },
   "files": [
     "dist"
