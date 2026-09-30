@@ -206,7 +206,13 @@ function watchClose(pop3: Pop3Client): { run: Run; stop(): void } {
   let stopped = false;
   const closed = new Promise<never>((_, reject) => {
     pop3.on?.("warn", (err) => {
-      if (!stopped && (err.eventName === "end" || err.eventName === "close")) {
+      if (stopped) return;
+
+      // The library's idle timeout warns `timeout` and then closes the socket:
+      // report the timeout, not the close it causes.
+      if (err.eventName === "timeout") {
+        reject(toPollError(err));
+      } else if (err.eventName === "end" || err.eventName === "close") {
         reject(new PollError("POP3 server closed the connection", 502));
       }
     });

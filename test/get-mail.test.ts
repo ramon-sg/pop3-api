@@ -206,6 +206,21 @@ describe("getMail", () => {
     expect(calls.quit).toBe(0);
   });
 
+  test("the library idle timeout answers 504, not the close it causes", async () => {
+    const { client } = fakeClient({ messages: [raw("Welcome")] });
+    client.RETR = () => {
+      setTimeout(() => {
+        client.emit("warn", Object.assign(new Error("timeout"), { eventName: "timeout" }));
+        client.emit("warn", Object.assign(new Error("close"), { eventName: "close" }));
+      }, 5);
+      return new Promise(() => {});
+    };
+
+    const [error] = await getMail(credentials, () => client);
+
+    expect(error!.status).toBe(504);
+  });
+
   test("the close that follows QUIT is not an error", async () => {
     const { client, calls } = fakeClient({ messages: [raw("Welcome")] });
     client.QUIT = async () => {
