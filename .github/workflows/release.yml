@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Check versions match the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          server=$(jq -r .version package.json)
+          client=$(jq -r .version client/package.json)
+          if [ "$tag" != "$server" ] || [ "$tag" != "$client" ]; then
+            echo "Tag $tag does not match package.json ($server) and client/package.json ($client)"
+            exit 1
+          fi
+
+      - name: Test server
+        run: |
+          bun install --frozen-lockfile
+          bun run test
+
+      - name: Test and build client
+        working-directory: client
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run test
+          bun run build
+          bun pm pack
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tarball="client/pop3-api-client-${GITHUB_REF_NAME#v}.tgz"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$tarball" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$tarball" --title "$GITHUB_REF_NAME" --generate-notes
+          fi
