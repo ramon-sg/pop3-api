@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, master]
+
+jobs:
+  server:
+    name: Server (unit + integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .tool-versions
+      - run: bun install --frozen-lockfile
+      # The integration tests import the client sources.
+      - run: bun install --frozen-lockfile
+        working-directory: client
+      - run: bun run typecheck
+      - run: bun run test
+
+  client:
+    name: Client (unit + consumers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .tool-versions
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+      - run: bun install --frozen-lockfile
+        working-directory: client
+      - run: bun run typecheck
+        working-directory: client
+      - run: bun run test
+        working-directory: client
+      - run: bun run test:consumers
+        working-directory: client
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t pop3-api:ci .
