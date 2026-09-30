@@ -1,4 +1,4 @@
-import { getMail } from "./mail";
+import { sharedPoll } from "./mail/shared-poll";
 import { logger } from "./logger";
 import { config } from "./config";
 import { nok, ok } from "./responder";
@@ -19,7 +19,7 @@ Bun.serve({
       return nok("Missing headers", { status: 400 });
     }
 
-    const [error, mails] = await getMail({
+    const [error, mails] = await sharedPoll({
       password,
       username,
       signal: req.signal,

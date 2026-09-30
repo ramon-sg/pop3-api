@@ -29,7 +29,14 @@ const MIN_BYTES_PER_MS = 50;
  */
 export type Pop3Client = Pick<Pop3Command, "UIDL" | "LIST" | "RETR" | "QUIT"> & {
   _socket?: { destroy(): void } | null;
+  on?(
+    event: "warn",
+    listener: (err: Error & { eventName?: string }) => void
+  ): unknown;
 };
+
+/** Runs one POP3 command, bounded by a timeout and by the connection. */
+type Run = <T>(promise: Promise<T>, ms?: number) => Promise<T>;
 
 export type CreateClient = (options: {
   username: string;
@@ -99,10 +106,11 @@ export async function getMail(
   logger.info("Polling mailbox", username);
 
   const pop3 = createClient({ username, password });
+  const session = watchClose(pop3);
   let mails: Mail[];
 
   try {
-    mails = await getMailFromServer(pop3, signal);
+    mails = await getMailFromServer(pop3, session.run, signal);
     throwIfAborted(signal);
   } catch (err) {
     const error = toPollError(err);
@@ -110,6 +118,9 @@ export async function getMail(
     pop3._socket?.destroy();
     return [error, null];
   }
+
+  // The server closes the connection after QUIT: that is not an error.
+  session.stop();
 
   try {
     await withTimeout(pop3.QUIT());
@@ -132,12 +143,13 @@ export async function getMail(
 
 async function getMailFromServer(
   pop3: Pop3Client,
+  run: Run,
   signal?: AbortSignal
 ): Promise<Mail[]> {
   const mails: Mail[] = [];
-  const uidls = (await withTimeout(pop3.UIDL())) as string[][];
+  const uidls = (await run(pop3.UIDL())) as string[][];
   const sizes = new Map(
-    ((await withTimeout(pop3.LIST())) as string[][]).map(([msgNum, size]) => [
+    ((await run(pop3.LIST())) as string[][]).map(([msgNum, size]) => [
       msgNum,
       Number(size) || 0,
     ])
@@ -149,7 +161,7 @@ async function getMailFromServer(
     throwIfAborted(signal);
 
     const size = sizes.get(msgNum!) ?? 0;
-    const mail = await retrieve(pop3, Number(msgNum), uidl, size);
+    const mail = await retrieve(pop3, run, Number(msgNum), uidl, size);
 
     if (mail.error) {
       logger.warn("Unreadable message", summarize(mail));
@@ -163,6 +175,7 @@ async function getMailFromServer(
 
 async function retrieve(
   pop3: Pop3Client,
+  run: Run,
   msgNum: number,
   uidl: string | undefined,
   size: number
@@ -171,7 +184,7 @@ async function retrieve(
   let raw: unknown;
 
   try {
-    raw = await withTimeout(pop3.RETR(msgNum), timeoutMs);
+    raw = await run(pop3.RETR(msgNum), timeoutMs);
   } catch (err) {
     // `-ERR` from the server for this message only (it carries `command`).
     // Anything else (timeout, socket) is a session error: abort the poll.
@@ -182,6 +195,31 @@ async function retrieve(
   }
 
   return parseMail(String(raw ?? ""), uidl);
+}
+
+/**
+ * @description node-pop3 does not reject a pending command when the server
+ * closes the connection: it only emits `warn`. Without this, a dropped
+ * connection would wait for `MAIL_TIMEOUT_MS` and answer 504.
+ */
+function watchClose(pop3: Pop3Client): { run: Run; stop(): void } {
+  let stopped = false;
+  const closed = new Promise<never>((_, reject) => {
+    pop3.on?.("warn", (err) => {
+      if (!stopped && (err.eventName === "end" || err.eventName === "close")) {
+        reject(new PollError("POP3 server closed the connection", 502));
+      }
+    });
+  });
+  // Nobody awaits it when the connection closes after the last command.
+  closed.catch(() => {});
+
+  return {
+    run: (promise, ms) => Promise.race([withTimeout(promise, ms), closed]),
+    stop: () => {
+      stopped = true;
+    },
+  };
 }
 
 function throwIfAborted(signal?: AbortSignal) {

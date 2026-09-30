@@ -57,8 +57,13 @@ caller goes away** before the response is sent, the session is closed
 **without** `QUIT`, so Gmail does not mark anything as downloaded and the emails
 come back in the next poll.
 
+Concurrent requests with the same credentials share one POP3 session: they all
+get the same emails, and the session is only abandoned (without `QUIT`) when
+every caller went away.
+
 > **One consumer per inbox.** Two processes polling the same inbox (two CI runs,
-> a CI run and a local run, several Playwright workers with their own mailbox…)
+> a CI run and a local run, several Playwright workers with their own mailbox,
+> each with its own pop3-api)
 > take each other's emails: whoever polls first gets them. Use one Gmail account
 > per concurrent consumer.
 
@@ -108,7 +113,7 @@ When there are raw headers, they come in `headers`:
 | Status | When |
 | ------ | ---- |
 | 400 | Missing `X-POP3-USERNAME` or `X-POP3-PASSWORD` |
-| 502 | The POP3 server failed (e.g. `-ERR [AUTH] …`, connection refused, DNS error) |
+| 502 | The POP3 server failed (e.g. `-ERR [AUTH] …`, connection refused, DNS error, connection closed mid-session) |
 | 504 | The POP3 server did not answer within `MAIL_TIMEOUT_MS` |
 
 
