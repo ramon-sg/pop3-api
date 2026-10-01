@@ -37,8 +37,9 @@
   "scripts": {
     "clear": "rm -rf dist",
     "build": "bun run clear && tsc -p tsconfig.build.json",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "test": "bun test ./test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test:consumers": "./scripts/test-consumers.sh"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.40.0"

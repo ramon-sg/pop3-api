@@ -23,7 +23,7 @@ bun run start
 To test:
 
 ```bash
-bun run test
+bun run test        # unit + integration (see Testing)
 ```
 
 # Configuration
@@ -317,14 +317,46 @@ bun run build     # dist/
 bun pm pack       # pop3-api-client-<version>.tgz
 ```
 
+# Testing
+
+| Command | What it covers |
+| ------- | -------------- |
+| `bun run test` | Unit tests of the server, plus **integration tests** (`test/integration`): the client, the real server (as a separate process) and a POP3 server that behaves like Gmail (a message is only committed by a session that `RETR`s it and ends with `QUIT`). They check that no mail is lost when the connection drops, the server hangs, the caller gives up, or two callers poll at once. |
+| `cd client && bun run test` | Unit tests of the client. |
+| `cd client && bun run test:consumers` | Installs the packed client (the `.tgz` a release publishes) in ESM and CommonJS projects and runs `tsc` and Playwright there. Catches packaging bugs (`exports`, types). Needs node, npm and network. |
+
+CI (`.github/workflows/ci.yml`) runs all of them and builds the Docker image on
+every pull request.
+
 # Release
 
-Pushing a `v*` tag (e.g. `v0.0.3`) runs `.github/workflows/release.yml`: it
-tests the server and the client, builds the client and attaches
-`pop3-api-client-<version>.tgz` to the GitHub Release. The tag must match the
-`version` of `package.json` and `client/package.json`.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it runs every test,
+builds the client, attaches `pop3-api-client-<version>.tgz` to the GitHub
+Release and, when the `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets are set,
+pushes `ramonsoto/pop3-api:<tag>` (override the image with the `DOCKER_IMAGE`
+repository variable). The tag must match the `version` of `package.json` and
+`client/package.json`, and a published tarball or image is never replaced:
+consumers pin the tarball hash in their lockfile. A fix needs a new version.
 
-The Docker image is still published by hand:
+## Release candidates
+
+Try a version in a consumer before releasing it:
+
+1. Set the version to e.g. `0.0.3-rc.1` in both `package.json` files and push
+   the tag `v0.0.3-rc.1`. The release is marked as a prerelease.
+2. In the consumer, install
+   `https://github.com/ramon-sg/pop3-api/releases/download/v0.0.3-rc.1/pop3-api-client-0.0.3-rc.1.tgz`
+   and run image `ramonsoto/pop3-api:v0.0.3-rc.1`.
+3. When it works, release `v0.0.3` the same way and switch the consumer to it.
+
+To try local changes without any release:
+
+```bash
+docker build -t pop3-api:local .
+(cd client && bun run build && bun pm pack)   # client/pop3-api-client-<version>.tgz
+```
+
+Without the Docker secrets, push the image by hand:
 
 ```bash
 docker build -t ramonsoto/pop3-api:v0.0.3 .
