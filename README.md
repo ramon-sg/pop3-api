@@ -253,14 +253,30 @@ Playwright's default test timeout (30 s) is shorter than the default `waitFor`
 timeout (60 s): raise it with `test.setTimeout()` or pass a shorter `timeout`,
 otherwise the test is killed before the readable error below.
 
-If the email does not arrive it throws a readable error:
+If the email does not arrive it throws an error that says why:
 
 ```
-Mail not found after 200s (41 polls).
-Filter: {"to":"tests+k3j9x…","subject":"/pedido/i"}
-Mailbox has 3 mails (0 unreadable).
-Last API error: none
+Mail not found after 200s.
+Filter: {"to":"tests+k3j9x…","subject":"/camino/i"}
+Verdict: filter-mismatch — a mail for this address arrived, but it does not match the rest of the filter (subject, from, …).
+Polls: 30 polls: 27 ok (1 with new mails), 3 errors: 3× "pop3-api answered 504: POP3 server timed out after 30000ms" from 16:58:10 to 16:58:40.
+pop3-api: 1 retained, 0 expired for this address; last poll at 16:59:01 ok (812 ms, 0 new).
+Mails for tests+k3j9x…@gmail.com (1):
+  - "Tu pedido ABC está listo para despacho" from no-reply@shop.cl to tests+k3j9x…@gmail.com at 2026-10-01T16:57:02.000Z
 ```
+
+| Verdict | Meaning |
+| ------- | ------- |
+| `filter-mismatch` | A mail for the address arrived, but the rest of the filter does not match (e.g. the template changed the subject). |
+| `taken` | The mails for the address were already returned by an earlier `waitFor` (overlapping filters). |
+| `unreadable` | A mail for the address arrived, but pop3-api could not read it (`error`). |
+| `expired` | pop3-api consumed mails for the address, but they expired before this `waitFor` asked. |
+| `never-arrived` | No mail for the address reached the inbox. Check the polls and their errors. |
+| `no-match` | The filter has no string `to`: the last 10 mails received are listed instead. |
+
+Every poll is listed, errors included (not only the last one). The mails are
+only summarized: never their body nor attachments, which carry verification
+links and codes.
 
 Transient errors (network, 5xx, 408, 429) are retried. Bad credentials
 (`-ERR [AUTH]`) and any other 4xx (e.g. a wrong URL) fail right away with a
@@ -286,6 +302,8 @@ mailbox.all();           // every email this mailbox received so far (copy)
 mailbox.find(filter);    // searches them without polling, including taken ones; Mail | undefined
 await mailbox.poll(to);  // polls now (only `to` when given) and returns the new emails
 mailbox.meta();          // `meta` of the last poll (pop3-api >= 0.0.3)
+mailbox.diagnostics(filter); // the report above as an object, for that filter
+mailbox.history();       // diagnostics of the last 50 `waitFor` calls
 mailbox.clear();         // forgets what it received
 ```
 
@@ -295,6 +313,10 @@ A ready to use fixture is included. The mailbox is **worker scoped**. Several
 workers can share one pop3-api: each asks for its own alias and pop3-api keeps
 the emails whoever polled (see [retention](#retention-and-to)). Within the
 retention, a restarted worker loses nothing either.
+
+When a test fails, the fixture attaches the diagnostics of the `waitFor` calls
+that test made: `mailbox` (the text report) and `mailbox.json`. They show up in
+the HTML report next to the trace.
 
 ```ts
 // fixtures.ts

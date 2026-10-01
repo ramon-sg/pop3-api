@@ -26,6 +26,7 @@ run_consumer() {
   mkdir -p "$dir/tests"
   cp "$CLIENT_DIR/test/consumer/fixtures.ts" "$dir/tests/"
   cp "$CLIENT_DIR/test/consumer/mailbox.spec.ts" "$dir/tests/"
+  cp "$CLIENT_DIR/test/consumer/diagnostics.spec.ts" "$dir/tests/"
 
   node -e '
     const [dir, type] = process.argv.slice(1);
@@ -55,7 +56,23 @@ JSON
     npm install --silent --no-audit --no-fund \
       "$TARBALL" "@playwright/test@$PLAYWRIGHT" typescript @types/node
     npx tsc -p .
-    npx playwright test --reporter=line
+    PLAYWRIGHT_JSON_OUTPUT_NAME=report.json npx playwright test --reporter=line,json
+    # The failed waitFor attached its diagnostics (text + JSON), with no body.
+    node -e '
+      const report = require("./report.json");
+      const tests = report.suites.flatMap(function walk(s) {
+        return [...(s.specs ?? []), ...(s.suites ?? []).flatMap(walk)];
+      });
+      const spec = tests.find((t) => t.title.startsWith("a failed waitFor"));
+      const attachments = spec.tests[0].results[0].attachments;
+      const text = attachments.find((a) => a.name === "mailbox");
+      const json = attachments.find((a) => a.name === "mailbox.json");
+      if (!text || !json) throw new Error("diagnostics not attached: " + JSON.stringify(attachments.map((a) => a.name)));
+      const body = Buffer.from(text.body, "base64").toString();
+      if (!/Verdict: (filter-mismatch|taken)/.test(body)) throw new Error("unexpected diagnostics:\n" + body);
+      if (body.includes("482913") || body.includes("verify")) throw new Error("diagnostics leaked the body:\n" + body);
+      console.log("  diagnostics attached ✔");
+    '
   )
 }
 
