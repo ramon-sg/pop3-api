@@ -13,6 +13,17 @@ const mail = (overrides: Partial<Mail>): Mail => ({
 
 type Reply = { status?: number; body: unknown } | Error;
 
+/** Fake pop3-api that records the requested URLs. */
+function urlRecorder(reply: (url: URL) => unknown) {
+  const urls: URL[] = [];
+  const fetch = (async (input: string) => {
+    const url = new URL(input);
+    urls.push(url);
+    return new Response(JSON.stringify(reply(url)));
+  }) as unknown as typeof globalThis.fetch;
+  return { fetch, urls };
+}
+
 /** Fake pop3-api: each call consumes the next reply (the last one repeats). */
 function fakeApi(replies: Reply[]) {
   const calls: RequestInit[] = [];
@@ -47,6 +58,56 @@ describe("createMailbox", () => {
   test("rejects missing options right away", () => {
     expect(() => createMailbox({ ...options, url: "" })).toThrow(MailboxError);
     expect(() => createMailbox({ ...options, password: "" })).toThrow("`password` is required");
+  });
+
+  test("rejects an invalid url right away", () => {
+    expect(() => createMailbox({ ...options, url: "pop3-api:3000" })).not.toThrow();
+    expect(() => createMailbox({ ...options, url: "not a url" })).toThrow(
+      "`url` is not a valid URL"
+    );
+  });
+
+  test("waitFor with a string `to` asks pop3-api only for that address", async () => {
+    const welcome = mail({ uidl: "1", to: [{ name: "", address: "user+a@gmail.com" }] });
+    const api = urlRecorder(() => ({ success: true, data: [welcome] }));
+    const mailbox = createMailbox({ ...options, fetch: api.fetch });
+
+    await mailbox.waitFor({ to: "User+A@gmail.com" });
+    await mailbox.waitFor({ subject: /nunca/ }, { interval: 1, timeout: 5 }).catch(() => {});
+    await mailbox.waitFor({ to: /user\+a/ }, { interval: 1, timeout: 5 }).catch(() => {});
+
+    const requested = api.urls.map((u) => u.searchParams.get("to"));
+    expect(requested[0]).toBe("user+a@gmail.com");
+    // Without a string `to` (no `to`, or a RegExp) it asks for every mail.
+    expect(new Set(requested.slice(1))).toEqual(new Set([null]));
+  });
+
+  test("concurrent polls share a request per address, not across addresses", async () => {
+    const api = urlRecorder(() => ({ success: true, data: [] }));
+    const mailbox = createMailbox({ ...options, fetch: api.fetch });
+
+    await Promise.all([
+      mailbox.poll("a@gmail.com"),
+      mailbox.poll("A@gmail.com"),
+      mailbox.poll("b@gmail.com"),
+      mailbox.poll(),
+    ]);
+
+    expect(api.urls.map((u) => u.searchParams.get("to")).sort()).toEqual([
+      "a@gmail.com",
+      "b@gmail.com",
+      null,
+    ].sort());
+  });
+
+  test("keeps the meta of the last poll", async () => {
+    const meta = { retained: 1, expired: 0, lastPoll: null, retentionMs: 1_800_000 };
+    const api = urlRecorder(() => ({ success: true, data: [], meta }));
+    const mailbox = createMailbox({ ...options, fetch: api.fetch });
+
+    expect(mailbox.meta()).toBeUndefined();
+    await mailbox.poll();
+    expect(mailbox.meta()).toEqual(meta);
   });
 
   test("rejects a NaN or negative timeout instead of waiting forever", async () => {

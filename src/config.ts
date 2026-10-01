@@ -10,6 +10,8 @@ export const config = {
     tls: boolean(process.env.MAIL_TLS, true),
     rejectUnauthorized: boolean(process.env.MAIL_REJECT_UNAUTHORIZED, true),
     timeoutMs: number(process.env.MAIL_TIMEOUT_MS, 30_000),
+    retentionMs: number(process.env.MAIL_RETENTION_MS, 30 * 60_000),
+    retentionMax: number(process.env.MAIL_RETENTION_MAX, 500),
   },
 };
 

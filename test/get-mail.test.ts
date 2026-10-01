@@ -146,6 +146,45 @@ describe("getMail", () => {
     expect(calls.quit).toBe(1);
   });
 
+  test("beforeQuit gets the messages before QUIT, and never on a failed poll", async () => {
+    const order: string[] = [];
+    const ok = fakeClient({ messages: [raw("Welcome")] });
+    const quit = ok.client.QUIT;
+    ok.client.QUIT = async () => {
+      order.push("QUIT");
+      return quit();
+    };
+
+    await getMail(
+      { ...credentials, beforeQuit: (mails) => order.push(`store ${mails.length}`) },
+      ok.create
+    );
+    expect(order).toEqual(["store 1", "QUIT"]);
+
+    const failed = fakeClient({ messages: [new Error("socket closed")] });
+    let stored = false;
+    await getMail({ ...credentials, beforeQuit: () => (stored = true) }, failed.create);
+    expect(stored).toBe(false);
+  });
+
+  test("a -ERR message keeps its headers (from TOP) so it can reach its alias", async () => {
+    const serverError = Object.assign(new Error("Message is unavailable"), {
+      eventName: "error",
+      command: "RETR 1",
+    });
+    const { client } = fakeClient({ messages: [serverError] });
+    client.TOP = async () => "To: user+a@gmail.com\r\nSubject: Broken";
+
+    const [, mails] = await getMail(credentials, () => client);
+
+    expect(mails![0]).toMatchObject({
+      uidl: "uid-1",
+      error: "RETR failed: Message is unavailable",
+      headers: "To: user+a@gmail.com\r\nSubject: Broken",
+      subject: "Broken",
+    });
+  });
+
   test("a large message gets more time than a command", async () => {
     const previous = config.mail.timeoutMs;
     config.mail.timeoutMs = 20;

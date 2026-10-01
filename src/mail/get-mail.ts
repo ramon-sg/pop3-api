@@ -14,6 +14,11 @@ type GetMailOptions = {
    * so the session is closed without `QUIT`.
    */
   signal?: AbortSignal;
+  /**
+   * Called with every downloaded message right before `QUIT`, the moment
+   * Gmail commits them: whatever must not be lost is stored here.
+   */
+  beforeQuit?: (mails: Mail[]) => void;
 };
 
 /**
@@ -28,6 +33,7 @@ const MIN_BYTES_PER_MS = 50;
  * POP3 client.
  */
 export type Pop3Client = Pick<Pop3Command, "UIDL" | "LIST" | "RETR" | "QUIT"> & {
+  TOP?: Pop3Command["TOP"];
   _socket?: { destroy(): void } | null;
   on?(
     event: "warn",
@@ -100,7 +106,7 @@ const createPop3Client: CreateClient = ({ username, password }) => {
  * ```
  */
 export async function getMail(
-  { password, username, signal }: GetMailOptions,
+  { password, username, signal, beforeQuit }: GetMailOptions,
   createClient: CreateClient = createPop3Client
 ): Promise<[PollError, null] | [null, Mail[]]> {
   logger.info("Polling mailbox", username);
@@ -121,6 +127,7 @@ export async function getMail(
 
   // The server closes the connection after QUIT: that is not an error.
   session.stop();
+  beforeQuit?.(mails);
 
   try {
     await withTimeout(pop3.QUIT());
@@ -189,7 +196,8 @@ async function retrieve(
     // `-ERR` from the server for this message only (it carries `command`).
     // Anything else (timeout, socket) is a session error: abort the poll.
     if (err instanceof Error && "command" in err) {
-      return errorMail(undefined, uidl, `RETR failed: ${err.message}`);
+      const headers = await topHeaders(pop3, run, msgNum);
+      return errorMail(headers, uidl, `RETR failed: ${err.message}`);
     }
     throw err;
   }
@@ -227,6 +235,26 @@ function watchClose(pop3: Pop3Client): { run: Run; stop(): void } {
       stopped = true;
     },
   };
+}
+
+/**
+ * @description Headers of a message whose `RETR` failed, so it can still be
+ * handed to the alias it was sent to. Best effort: `undefined` if `TOP` fails
+ * too.
+ */
+async function topHeaders(
+  pop3: Pop3Client,
+  run: Run,
+  msgNum: number
+): Promise<string | undefined> {
+  if (!pop3.TOP) return undefined;
+
+  try {
+    return String((await run(pop3.TOP(msgNum, 0))) ?? "") || undefined;
+  } catch (err) {
+    if (err instanceof Error && "command" in err) return undefined;
+    throw err;
+  }
 }
 
 function throwIfAborted(signal?: AbortSignal) {

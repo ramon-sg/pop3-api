@@ -2,6 +2,7 @@ import { describeFilter, matches, toRegExp } from "./match.js";
 import type {
   ApiResponse,
   Mail,
+  MailboxMeta,
   MailFilter,
   MailboxOptions,
   WaitOptions,
@@ -26,9 +27,13 @@ export class MailboxError extends Error {
 }
 
 /**
- * @description Creates a mailbox that polls pop3-api and keeps in memory every
- * mail it receives, not only the one being waited for: pop3-api hands each mail
- * over only once, so a mail dropped here would be lost.
+ * @description Creates a mailbox that polls pop3-api and waits for mails.
+ *
+ * pop3-api >= 0.0.3 keeps the mails it consumes and, with `?to=`, returns only
+ * the mails of that address. When the filter has a string `to`, every poll asks
+ * only for that address; otherwise it gets every retained mail of the account.
+ * The mailbox remembers what it received (deduplicated by `uidl`) and which
+ * mails `waitFor` already returned.
  *
  * @example
  * ```ts
@@ -47,6 +52,12 @@ export function createMailbox(options: MailboxOptions) {
     }
   }
 
+  try {
+    new URL(url);
+  } catch {
+    throw new MailboxError(`createMailbox: \`url\` is not a valid URL: ${url}`);
+  }
+
   const request = options.fetch ?? fetch;
   const requestTimeout = positive(
     "requestTimeout",
@@ -54,7 +65,9 @@ export function createMailbox(options: MailboxOptions) {
   );
   const mails = new Map<string, Mail>();
   const taken = new Set<string>();
-  let inflight: Promise<Mail[]> | null = null;
+  /** In-flight polls, per requested address ("" = every mail). */
+  const inflight = new Map<string, Promise<Mail[]>>();
+  let lastMeta: MailboxMeta | undefined;
 
   /**
    * @description Unique address for one test, built with the `+` alias that
@@ -70,19 +83,27 @@ export function createMailbox(options: MailboxOptions) {
   }
 
   /**
-   * @description Polls pop3-api once and stores the new mails. Concurrent calls
-   * share the same request. Returns only the mails that were not stored yet.
+   * @description Polls pop3-api once, for `to` only when given, and stores the
+   * mails it returns. Concurrent calls for the same address share the request.
+   * Returns only the mails that were not received before.
    */
-  function poll(): Promise<Mail[]> {
-    inflight ??= fetchMails().finally(() => {
-      inflight = null;
-    });
+  function poll(to?: string): Promise<Mail[]> {
+    const address = to?.trim().toLowerCase() ?? "";
+    let current = inflight.get(address);
 
-    return inflight;
+    if (!current) {
+      current = fetchMails(address).finally(() => inflight.delete(address));
+      inflight.set(address, current);
+    }
+
+    return current;
   }
 
-  async function fetchMails(): Promise<Mail[]> {
-    const res = await request(url, {
+  async function fetchMails(address: string): Promise<Mail[]> {
+    const target = new URL(url);
+    if (address) target.searchParams.set("to", address);
+
+    const res = await request(target.toString(), {
       headers: {
         "X-POP3-USERNAME": username,
         "X-POP3-PASSWORD": password,
@@ -106,6 +127,7 @@ export function createMailbox(options: MailboxOptions) {
         : new Error(message);
     }
 
+    lastMeta = body.meta;
     const fresh: Mail[] = [];
 
     for (const mail of body.data) {
@@ -180,7 +202,8 @@ export function createMailbox(options: MailboxOptions) {
       try {
         // Stop waiting at the deadline, but let the poll finish: whatever it
         // brings is still stored for the next `waitFor`.
-        await within(poll(), timeout - (Date.now() - start));
+        const to = typeof filter.to === "string" ? filter.to : undefined;
+        await within(poll(to), timeout - (Date.now() - start));
         lastError = null;
       } catch (err) {
         if (err instanceof MailboxError) throw err;
@@ -251,6 +274,8 @@ export function createMailbox(options: MailboxOptions) {
     code,
     /** @description Copy of every mail received so far. */
     all: (): Mail[] => [...mails.values()],
+    /** @description `meta` of the last successful poll (pop3-api >= 0.0.3). */
+    meta: (): MailboxMeta | undefined => lastMeta,
     /** @description Forgets the stored mails. */
     clear: (): void => {
       mails.clear();

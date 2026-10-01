@@ -46,8 +46,23 @@ export type Mail = {
   attachments: Attachment[];
 };
 
+/** What pop3-api (>= 0.0.3) knows about the requested address. */
+export type MailboxMeta = {
+  /** Mails retained for the address (or the whole account without `to`). */
+  retained: number;
+  /** Mails of the address dropped by retention or by the cap. */
+  expired: number;
+  lastPoll: {
+    at: string;
+    durationMs: number;
+    newMails: number;
+    error?: string;
+  } | null;
+  retentionMs: number;
+};
+
 export type ApiResponse =
-  | { success: true; data: Mail[] }
+  | { success: true; data: Mail[]; meta?: MailboxMeta }
   | { success: false; error: string };
 
 /**
