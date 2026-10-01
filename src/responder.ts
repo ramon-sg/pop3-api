@@ -3,7 +3,7 @@ import { PASSWORD_KEY, USERNAME_KEY } from "./constants";
 const HEADERS = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "OPTIONS, POST",
+  "Access-Control-Allow-Methods": "OPTIONS, GET",
 
   "Access-Control-Allow-Headers": [
     "Content-Type",
@@ -46,13 +46,14 @@ export function ok(data: any, options?: Options) {
 }
 
 /**
- * @description Returns a 500 response, with the error message passed in the body
+ * @description Returns an error response (500 unless `status` is given), with
+ * the error message passed in the body
  */
-export function nok(error: string, options?: Options) {
+export function nok(error: string, options: Options = {}) {
   const result = {
     success: false,
     error,
   };
 
-  return response(result, options);
+  return response(result, { ...options, status: options.status ?? 500 });
 }

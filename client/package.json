@@ -1,0 +1,57 @@
+{
+  "name": "pop3-api-client",
+  "version": "0.0.3",
+  "description": "Client for pop3-api: wait for emails from E2E tests",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ramon-sg/pop3-api.git",
+    "directory": "client"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "playwright": [
+        "./dist/playwright.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./playwright": {
+      "types": "./dist/playwright.d.ts",
+      "default": "./dist/playwright.js"
+    }
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clear": "rm -rf dist",
+    "build": "bun run clear && tsc -p tsconfig.build.json",
+    "test": "bun test ./test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test:consumers": "./scripts/test-consumers.sh"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}

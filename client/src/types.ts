@@ -1,0 +1,108 @@
+/**
+ * Mirror of the `Mail` returned by pop3-api (`src/mail/types.ts`). Kept in
+ * sync by hand: the client has no dependencies on the server.
+ */
+export type Address = {
+  name: string;
+  address?: string;
+  group?: Address[];
+};
+
+export type Attachment = {
+  filename: string | null;
+  mimeType: string;
+  disposition: "attachment" | "inline" | null;
+  related?: boolean;
+  description?: string;
+  contentId?: string;
+  method?: string;
+  /** Base64 encoded content (pop3-api >= 0.0.3). */
+  content: string;
+};
+
+export type Mail = {
+  /** Unique id of the message in the POP3 mailbox (pop3-api >= 0.0.3). */
+  uidl?: string;
+  /** Set when the message could not be read (empty or unparseable). */
+  error?: string;
+  /** Raw headers, only present when `error` is set. */
+  headers?: string;
+
+  from?: Address;
+  to?: Address[];
+  subject?: string;
+  html?: string;
+  text?: string;
+
+  sender?: Address;
+  cc?: Address[];
+  bcc?: Address[];
+  replyTo?: Address[];
+  inReplyTo?: string;
+  messageId?: string;
+  returnPath?: string;
+  deliveredTo?: string;
+  date?: string;
+  attachments: Attachment[];
+};
+
+/** What pop3-api (>= 0.0.3) knows about the requested address. */
+export type MailboxMeta = {
+  /** Mails retained for the address (or the whole account without `to`). */
+  retained: number;
+  /** Mails of the address dropped by retention or by the cap. */
+  expired: number;
+  lastPoll: {
+    at: string;
+    durationMs: number;
+    newMails: number;
+    error?: string;
+  } | null;
+  retentionMs: number;
+};
+
+export type ApiResponse =
+  | { success: true; data: Mail[]; meta?: MailboxMeta }
+  | { success: false; error: string };
+
+/**
+ * A string matches exactly (addresses ignore case), a RegExp is tested and a
+ * function receives the value.
+ */
+export type Matcher = string | RegExp | ((value: string) => boolean);
+
+/** Every field is optional; the given ones are combined with AND. */
+export type MailFilter = {
+  /** Matches if any recipient in `to`, `cc`, `bcc` or `Delivered-To` matches. */
+  to?: Matcher;
+  from?: Matcher;
+  subject?: Matcher;
+  text?: Matcher;
+  html?: Matcher;
+  /** Free filter over the whole mail. */
+  where?: (mail: Mail) => boolean;
+};
+
+export type WaitOptions = {
+  /** Total ms before failing. Default 60_000. */
+  timeout?: number;
+  /** Ms between polls. Default 5_000. */
+  interval?: number;
+};
+
+export type MailboxOptions = {
+  /** Where pop3-api runs, e.g. `http://localhost:3033`. */
+  url: string;
+  username: string;
+  password: string;
+  /** Defaults for every `waitFor`. */
+  wait?: WaitOptions;
+  /**
+   * Max ms for one request to pop3-api. Default 120_000. pop3-api >= 0.0.3
+   * closes the POP3 session without `QUIT` when the request is aborted, so no
+   * mail is lost.
+   */
+  requestTimeout?: number;
+  /** Custom fetch, mainly for tests. */
+  fetch?: typeof fetch;
+};

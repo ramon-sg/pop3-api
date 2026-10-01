@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Check versions match the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          server=$(jq -r .version package.json)
+          client=$(jq -r .version client/package.json)
+          if [ "$tag" != "$server" ] || [ "$tag" != "$client" ]; then
+            echo "Tag $tag does not match package.json ($server) and client/package.json ($client)"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .tool-versions
+
+      - name: Test server
+        run: |
+          bun install --frozen-lockfile
+          (cd client && bun install --frozen-lockfile)
+          bun run test
+
+      - name: Test and build client
+        working-directory: client
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run test
+          bun run test:consumers
+          bun run build
+          bun pm pack
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tarball="client/pop3-api-client-${GITHUB_REF_NAME#v}.tgz"
+          # Never replace a published tarball: consumers pin its integrity hash
+          # in their lockfile. A fix needs a new version.
+          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' 2>/dev/null \
+              | grep -qx "$(basename "$tarball")"; then
+            echo "$(basename "$tarball") is already published in $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$tarball"
+          else
+            # v0.0.3-rc.1 → prerelease: installable by URL, not marked as latest.
+            prerelease=""
+            [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease="--prerelease"
+            gh release create "$GITHUB_REF_NAME" "$tarball" --title "$GITHUB_REF_NAME" \
+              --generate-notes $prerelease
+          fi
+
+      # Multi-arch like the published images: amd64 (CI runners) + arm64 (Apple Silicon).
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Publish Docker image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE: ${{ vars.DOCKER_IMAGE || 'ramonsoto/pop3-api' }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::notice::DOCKERHUB_TOKEN not set: push $IMAGE:$GITHUB_REF_NAME by hand"
+            exit 0
+          fi
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          if docker manifest inspect "$IMAGE:$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "$IMAGE:$GITHUB_REF_NAME already exists"
+            exit 1
+          fi
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -t "$IMAGE:$GITHUB_REF_NAME" --push .
