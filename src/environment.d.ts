@@ -10,6 +10,8 @@ declare global {
       MAIL_TLS?: string;
       MAIL_REJECT_UNAUTHORIZED?: string;
       MAIL_TIMEOUT_MS?: string;
+      MAIL_RETENTION_MS?: string;
+      MAIL_RETENTION_MAX?: string;
     }
   }
 }

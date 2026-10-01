@@ -34,6 +34,8 @@ To configure the server, you can use the following environment variables:
 - `MAIL_REJECT_UNAUTHORIZED`: if the client will reject unauthorized certificates (`true`/`false`). Default is `true`.
 - `MAIL_TIMEOUT_MS`: max time to wait for each POP3 command. Default is `30000`.
   Downloading a message (`RETR`) gets 1 extra ms per 50 bytes of its size, so a large message on a slow link is not cut.
+- `MAIL_RETENTION_MS`: how long the server keeps the emails it consumed (see [retention](#retention-and-to)). Default is `1800000` (30 min).
+- `MAIL_RETENTION_MAX`: max emails kept per account; the oldest are dropped first. Default is `500`.
 - `LOG_LEVEL`: the log level of the server (`debug`, `info`, `warn`, `error`, `off`). Default is `info`.
   `info` logs a summary per email (`uidl`, `messageId`, `to`, `subject`, `date`); full bodies are only logged in `debug`.
 - `PORT`: the port the server will listen to. Default is 3000.
@@ -43,14 +45,28 @@ To obtain the emails it is necessary to make a query to `/` with the following h
 - `X-POP3-USERNAME`: the email you want to check
 - `X-POP3-PASSWORD`: the password of the email you want to check
 
-The response will be a JSON with the emails in the inbox.
+Add `?to=<address>` to get only the emails of that address:
 
-## Each email is delivered only once
+```bash
+curl "http://localhost:3000/?to=tests%2Babc@gmail.com" -H "X-POP3-USERNAME: <email>" -H "X-POP3-PASSWORD: <password>"
+```
+
+## Retention and `?to=`
 
 With Gmail in normal POP mode every poll downloads **all** pending emails and
-Gmail marks them as downloaded: the next poll will not return them again. Keep
-every email you receive, not only the one you are looking for — the
-[client](#client-for-e2e-tests) does this for you.
+Gmail marks them as downloaded: the next poll will not return them again. So
+the server keeps every email it consumed for `MAIL_RETENTION_MS` (per account,
+at most `MAIL_RETENTION_MAX`) and every request answers with the retained
+emails:
+
+- With `?to=<address>`, only the emails delivered to it: it matches `to`, `cc`,
+  `bcc` and `Delivered-To` ignoring case, and the raw headers of an unreadable
+  email. A test that waits for its `+` alias gets its emails whoever polled the
+  inbox: another test, another Playwright worker, a restarted one.
+- Without `to`, every retained email of the account.
+
+The emails are stored right before `QUIT`, and retained emails are only handed
+to a request whose own poll logged in with the same username and password.
 
 If a poll fails midway (auth error, timeout, dropped connection) **or the HTTP
 caller goes away** before the response is sent, the session is closed
@@ -61,11 +77,9 @@ Concurrent requests with the same credentials share one POP3 session: they all
 get the same emails, and the session is only abandoned (without `QUIT`) when
 every caller went away.
 
-> **One consumer per inbox.** Two processes polling the same inbox (two CI runs,
-> a CI run and a local run, several Playwright workers with their own mailbox,
-> each with its own pop3-api)
-> take each other's emails: whoever polls first gets them. Use one Gmail account
-> per concurrent consumer.
+> **One pop3-api per inbox.** Retention lives in the memory of one pop3-api.
+> Two pop3-api instances polling the same inbox (e.g. a CI run and a local run)
+> take each other's emails: whoever polls first keeps them.
 
 ## Success response
 
@@ -85,9 +99,25 @@ every caller went away.
       "date": "2021-09-01T00:00:00.000Z"
       // ...
     }
-  ]
+  ],
+  "meta": { "...": "see below" }
 }
 ```
+
+`meta` describes what the server knows about the requested address (or the
+whole account without `to`):
+
+```json
+"meta": {
+  "retained": 1,
+  "expired": 0,
+  "lastPoll": { "at": "2026-10-01T00:00:00.000Z", "durationMs": 812, "newMails": 3 },
+  "retentionMs": 1800000
+}
+```
+
+- `retained`: emails kept for it. `expired`: emails of it dropped by retention or by the cap.
+- `lastPoll`: the last poll of the account, from any caller: when, how long, how many new emails, and `error` if it failed.
 
 **Note**: You can see the full attributes of the mail in `Mail` type in `src/mail/types.ts`.
 Attachment `content` is base64 encoded.
@@ -132,9 +162,10 @@ docker run -p 3000:3000 ramonsoto/pop3-api:v0.0.3
 
 # Client (for E2E tests)
 
-Dependency-free library to wait for emails from tests. It polls `pop3-api`,
-keeps in memory **every** email it receives (not only the one you are waiting
-for) and waits until one matches your filter.
+Dependency-free library to wait for emails from tests. It polls `pop3-api`
+until an email matches your filter. When the filter has a string `to`, it only
+asks for that address (`?to=`); pop3-api keeps the emails it consumed, so the
+email is there even if another process polled the inbox first.
 
 Requires Node >= 20.19 (or Bun). It is an ES module that can also be
 `require`d, so it works in CommonJS Playwright projects. For TypeScript use
@@ -251,19 +282,19 @@ const pin = mailbox.code(mail, /PIN: (\d{4})/);       // or your own pattern (1s
 ## Other methods
 
 ```ts
-mailbox.all();           // every email received so far (copy)
-mailbox.find(filter);    // searches in memory without polling (every email); Mail | undefined
-await mailbox.poll();    // polls now and returns the new emails
-mailbox.clear();         // forgets the emails in memory
+mailbox.all();           // every email this mailbox received so far (copy)
+mailbox.find(filter);    // searches them without polling, including taken ones; Mail | undefined
+await mailbox.poll(to);  // polls now (only `to` when given) and returns the new emails
+mailbox.meta();          // `meta` of the last poll (pop3-api >= 0.0.3)
+mailbox.clear();         // forgets what it received
 ```
 
 ## Playwright
 
-A ready to use fixture is included. The mailbox is **worker scoped**: it lives
-for the whole worker, so an email that arrived during one test is still there
-for the next ones. Each worker has its own mailbox and they compete for the
-same inbox (see [one consumer per inbox](#each-email-is-delivered-only-once)):
-use `workers: 1` for the email tests, or one inbox per worker.
+A ready to use fixture is included. The mailbox is **worker scoped**. Several
+workers can share one pop3-api: each asks for its own alias and pop3-api keeps
+the emails whoever polled (see [retention](#retention-and-to)). Within the
+retention, a restarted worker loses nothing either.
 
 ```ts
 // fixtures.ts

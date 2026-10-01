@@ -177,4 +177,76 @@ describe("pop3-api end to end", () => {
     expect(mail.html).toContain(".line starting with a dot");
     expect(mail.attachments[0]!.content).toBe("aGVsbG8=");
   });
+
+  test("a mail consumed by another alias's poll reaches its owner later", async () => {
+    const box = mailbox();
+    const a = box.alias("a");
+    const b = box.alias("b");
+    gmail.deliver(rawMail({ to: a, subject: "For A" }));
+    gmail.deliver(rawMail({ to: b, subject: "For B" }));
+
+    // A's poll consumes the whole inbox: B's mail is committed in Gmail too.
+    expect((await mailbox().waitFor({ to: a })).subject).toBe("For A");
+    expect(gmail.pending()).toBe(0);
+
+    // Another process (another worker, another client) asks for B.
+    const other = mailbox();
+    expect((await other.waitFor({ to: b })).subject).toBe("For B");
+    expect(other.all().map((m) => m.subject)).toEqual(["For B"]);
+  });
+
+  test("a restarted worker does not lose the mails an earlier poll consumed", async () => {
+    const first = mailbox();
+    const to = first.alias();
+    gmail.deliver(rawMail({ to, subject: "Bienvenido" }));
+    await first.poll(to);
+
+    // Playwright replaces the worker after a failure: a brand new mailbox.
+    const restarted = mailbox();
+    expect((await restarted.waitFor({ to })).subject).toBe("Bienvenido");
+    expect(restarted.meta()).toMatchObject({ retained: 1, expired: 0 });
+  });
+
+  test("a -ERR message reaches its alias with error, thanks to its headers", async () => {
+    const box = mailbox();
+    const to = box.alias();
+    gmail.deliver(rawMail({ to, subject: "Broken" }));
+    gmail.deliver(rawMail({ to: "someone@gmail.com", subject: "Not mine" }));
+    gmail.setFault({ kind: "err", onRetr: 1 });
+
+    await box.poll(to);
+
+    expect(box.all()).toHaveLength(1);
+    expect(box.all()[0]).toMatchObject({
+      error: "RETR failed: Message is unavailable",
+      subject: "Broken",
+    });
+  });
+});
+
+describe("retention", () => {
+  let gmail: ReturnType<typeof startFakeGmail>;
+  let server: Awaited<ReturnType<typeof startServer>>;
+
+  beforeEach(async () => {
+    gmail = startFakeGmail();
+    server = await startServer(gmail.port, { MAIL_RETENTION_MS: "300" });
+  });
+
+  afterEach(() => {
+    server.stop();
+    gmail.stop();
+  });
+
+  test("an expired mail is no longer handed out and shows up in meta.expired", async () => {
+    const box = createMailbox({ url: server.url, username: USER, password: PASSWORD });
+    const to = box.alias();
+    gmail.deliver(rawMail({ to, subject: "Old" }));
+    await box.poll(to);
+    await Bun.sleep(400);
+
+    const late = createMailbox({ url: server.url, username: USER, password: PASSWORD });
+    expect(await late.poll(to)).toEqual([]);
+    expect(late.meta()).toMatchObject({ retained: 0, expired: 1, retentionMs: 300 });
+  });
 });

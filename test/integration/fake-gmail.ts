@@ -105,6 +105,13 @@ export function startFakeGmail() {
       return write(`+OK\r\n${lines.map((l) => `${l}\r\n`).join("")}.\r\n`);
     }
 
+    if (command === "TOP") {
+      const message = state.snapshot[Number(arg) - 1];
+      if (!message) return write("-ERR no such message\r\n");
+      const headers = message.raw.split("\r\n\r\n")[0]!;
+      return write(`+OK\r\n${stuff(headers)}\r\n\r\n.\r\n`);
+    }
+
     if (command === "RETR") {
       const index = Number(arg);
       const message = state.snapshot[index - 1];
@@ -118,11 +125,7 @@ export function startFakeGmail() {
       }
 
       state.retrieved.add(message);
-      const body = message.raw
-        .split("\r\n")
-        .map((l) => (l.startsWith(".") ? `.${l}` : l))
-        .join("\r\n");
-      return write(`+OK message follows\r\n${body}\r\n.\r\n`);
+      return write(`+OK message follows\r\n${stuff(message.raw)}\r\n.\r\n`);
     }
 
     write("-ERR unknown command\r\n");
@@ -143,6 +146,14 @@ export function startFakeGmail() {
     },
     stop: () => server.stop(true),
   };
+}
+
+/** POP3 dot-stuffing: a line starting with "." is sent as "..". */
+function stuff(text: string): string {
+  return text
+    .split("\r\n")
+    .map((l) => (l.startsWith(".") ? `.${l}` : l))
+    .join("\r\n");
 }
 
 export function rawMail({

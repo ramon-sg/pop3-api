@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
-
 import { getMail } from "./get-mail";
+import { accountKey } from "./store";
 
 type PollOptions = Parameters<typeof getMail>[0];
 type PollResult = Awaited<ReturnType<typeof getMail>>;
@@ -25,12 +24,10 @@ const flights = new Map<string, Flight>();
  * wrong password cannot read the mails of someone else's session.
  */
 export function sharedPoll(
-  { username, password, signal }: PollOptions,
+  { signal, ...options }: PollOptions,
   poll: Poll = getMail
 ): Promise<PollResult> {
-  const key = createHash("sha256")
-    .update(`${username}\0${password}`)
-    .digest("hex");
+  const key = accountKey(options.username, options.password);
 
   let flight = flights.get(key);
 
@@ -39,7 +36,7 @@ export function sharedPoll(
     const created: Flight = {
       controller,
       waiters: 0,
-      result: poll({ username, password, signal: controller.signal }).finally(
+      result: poll({ ...options, signal: controller.signal }).finally(
         () => {
           if (flights.get(key) === created) flights.delete(key);
         }
