@@ -356,11 +356,13 @@ docker build -t pop3-api:local .
 (cd client && bun run build && bun pm pack)   # client/pop3-api-client-<version>.tgz
 ```
 
-Without the Docker secrets, push the image by hand:
+Without the Docker secrets, push the image by hand (both architectures, like
+the workflow does):
 
 ```bash
-docker build -t ramonsoto/pop3-api:v0.0.3 .
-docker push ramonsoto/pop3-api:v0.0.3
+docker buildx create --name pop3-api-release --use   # once
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t ramonsoto/pop3-api:v0.0.3 --push .
 ```
 
 # Gmail Account

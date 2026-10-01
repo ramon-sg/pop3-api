@@ -2,7 +2,7 @@
   "name": "pop3-api",
   "module": "index.ts",
   "type": "module",
-  "version": "0.0.3",
+  "version": "0.0.3-rc.1",
   "scripts": {
     "clear": "rm -rf dist",
     "build": "bun run clear && bun build src/index.ts --outdir dist --target bun",
