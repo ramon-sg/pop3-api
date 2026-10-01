@@ -70,6 +70,30 @@ function recipients(mail: Mail): (string | undefined)[] {
   ];
 }
 
+/**
+ * @description Lowercased recipients, also read from the raw headers of an
+ * unreadable mail (it has no parsed `to`), like pop3-api does for `?to=`.
+ */
+export function recipientsOf(mail: Mail): string[] {
+  const found = new Set<string>();
+
+  for (const address of recipients(mail)) {
+    if (address) found.add(address.trim().toLowerCase());
+  }
+
+  if (mail.headers) {
+    const unfolded = mail.headers.replace(/\r?\n[ \t]+/g, " ");
+    for (const line of unfolded.split(/\r?\n/)) {
+      if (!/^(to|cc|bcc|delivered-to):/i.test(line)) continue;
+      for (const match of line.matchAll(/[^\s<>,;:"']+@[^\s<>,;"']+/g)) {
+        found.add(match[0].toLowerCase());
+      }
+    }
+  }
+
+  return [...found];
+}
+
 function addresses(list: Mail["to"] = []): (string | undefined)[] {
   return list.flatMap((item) =>
     item.group ? addresses(item.group) : [item.address]

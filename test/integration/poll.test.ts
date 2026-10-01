@@ -249,4 +249,22 @@ describe("retention", () => {
     expect(await late.poll(to)).toEqual([]);
     expect(late.meta()).toMatchObject({ retained: 0, expired: 1, retentionMs: 300 });
   });
+
+  test("waitFor explains that the mail expired, with what pop3-api reported", async () => {
+    const box = createMailbox({ url: server.url, username: USER, password: PASSWORD });
+    const to = box.alias();
+    gmail.deliver(rawMail({ to, subject: "Old" }));
+    await box.poll(to);
+    await Bun.sleep(400);
+
+    const late = createMailbox({ url: server.url, username: USER, password: PASSWORD });
+    const error = await late
+      .waitFor({ to }, { interval: 50, timeout: 200 })
+      .catch((e: Error) => e);
+
+    expect((error as Error).message).toContain("Verdict: expired");
+    expect((error as Error).message).toMatch(
+      /pop3-api: 0 retained, 1 expired for this address; last poll at \d\d:\d\d:\d\d ok/
+    );
+  });
 });

@@ -1,4 +1,11 @@
-import { describeFilter, matches, toRegExp } from "./match.js";
+import {
+  type PollRecord,
+  type WaitDiagnostics,
+  formatDiagnostics,
+  summarize,
+  verdictOf,
+} from "./diagnostics.js";
+import { describeFilter, matches, recipientsOf, toRegExp } from "./match.js";
 import type {
   ApiResponse,
   Mail,
@@ -12,6 +19,10 @@ const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_INTERVAL = 5_000;
 const DEFAULT_REQUEST_TIMEOUT = 120_000;
 const DEFAULT_CODE = /\b\d{6}\b/;
+/** Mails listed in a diagnostic when the filter has no address. */
+const NEARBY_LIMIT = 10;
+/** `waitFor` calls kept for `history()`. */
+const HISTORY_LIMIT = 50;
 
 export type Mailbox = ReturnType<typeof createMailbox>;
 
@@ -68,6 +79,8 @@ export function createMailbox(options: MailboxOptions) {
   /** In-flight polls, per requested address ("" = every mail). */
   const inflight = new Map<string, Promise<Mail[]>>();
   let lastMeta: MailboxMeta | undefined;
+  const waits: Omit<WaitDiagnostics, "nearby" | "meta" | "verdict">[] = [];
+  let waitSeq = 0;
 
   /**
    * @description Unique address for one test, built with the `+` alias that
@@ -179,54 +192,115 @@ export function createMailbox(options: MailboxOptions) {
       waitOptions.interval ?? options.wait?.interval ?? DEFAULT_INTERVAL
     );
     const start = Date.now();
-    let polls = 0;
-    let lastError: Error | null = null;
+    const to = typeof filter.to === "string" ? filter.to : undefined;
+    const record = {
+      id: ++waitSeq,
+      filter: describeFilter(filter),
+      address: to?.trim().toLowerCase(),
+      startedAt: new Date(start).toISOString(),
+      endedAt: undefined as string | undefined,
+      found: false,
+      polls: [] as PollRecord[],
+    };
+    waits.push(record);
+    if (waits.length > HISTORY_LIMIT) waits.shift();
 
     while (true) {
       const found = search(filter, true);
       if (found) {
         taken.add(keyOf(found));
+        record.found = true;
+        record.endedAt = new Date().toISOString();
         return found;
       }
 
       const elapsed = Date.now() - start;
-      if (elapsed >= timeout && polls > 0) {
-        throw new Error(notFoundMessage(filter, elapsed, polls, lastError));
+      if (elapsed >= timeout && record.polls.length > 0) {
+        record.endedAt = new Date().toISOString();
+        throw new Error(
+          `Mail not found after ${Math.round(elapsed / 1000)}s.\n` +
+            formatDiagnostics(diagnose(record))
+        );
       }
 
-      if (polls > 0) {
+      if (record.polls.length > 0) {
         await sleep(Math.min(interval, timeout - elapsed));
       }
 
-      polls++;
+      const pollStart = Date.now();
+      const entry: PollRecord = { at: new Date(pollStart).toISOString(), durationMs: 0 };
+      record.polls.push(entry);
       try {
         // Stop waiting at the deadline, but let the poll finish: whatever it
         // brings is still stored for the next `waitFor`.
-        const to = typeof filter.to === "string" ? filter.to : undefined;
-        await within(poll(to), timeout - (Date.now() - start));
-        lastError = null;
+        const fresh = await within(poll(to), timeout - (pollStart - start));
+        if (fresh === undefined) entry.pending = true;
+        else entry.newMails = fresh.length;
       } catch (err) {
-        if (err instanceof MailboxError) throw err;
-        lastError = err instanceof Error ? err : new Error(String(err));
+        entry.error = err instanceof Error ? err.message : String(err);
+        if (err instanceof MailboxError) {
+          entry.durationMs = Date.now() - pollStart;
+          throw err;
+        }
       }
+      entry.durationMs = Date.now() - pollStart;
     }
   }
 
-  function notFoundMessage(
-    filter: MailFilter,
-    elapsed: number,
-    polls: number,
-    lastError: Error | null
-  ): string {
-    const all = [...mails.values()];
-    const unreadable = all.filter((mail) => mail.error).length;
+  /** @description Diagnostics of a `waitFor` record, computed now. */
+  function diagnose(
+    record: Omit<WaitDiagnostics, "nearby" | "meta" | "verdict">
+  ): WaitDiagnostics {
+    const received = [...mails.entries()].map(([key, mail]) => ({
+      mail,
+      taken: taken.has(key),
+      to: recipientsOf(mail),
+    }));
 
-    return [
-      `Mail not found after ${Math.round(elapsed / 1000)}s (${polls} polls).`,
-      `Filter: ${describeFilter(filter)}`,
-      `Mailbox has ${all.length} mails (${unreadable} unreadable).`,
-      `Last API error: ${lastError?.message ?? "none"}`,
-    ].join("\n");
+    const nearby = (
+      record.address
+        ? received.filter((r) => r.to.includes(record.address!))
+        : received.slice(-NEARBY_LIMIT)
+    ).map((r) => summarize(r.mail, r.taken, r.to));
+
+    return {
+      ...record,
+      polls: [...record.polls],
+      nearby,
+      meta: lastMeta,
+      verdict: verdictOf(record.found, nearby, record.address, lastMeta),
+    };
+  }
+
+  /**
+   * @description Diagnostics for `filter`: the mails received for its address
+   * (or the last ones received), the polls of the latest `waitFor` with the
+   * same filter and the last `meta` of pop3-api. Only summaries: never the
+   * body nor the attachments.
+   */
+  function diagnostics(filter: MailFilter = {}): WaitDiagnostics {
+    const described = describeFilter(filter);
+    const latest = [...waits].reverse().find((w) => w.filter === described);
+    const to = typeof filter.to === "string" ? filter.to : undefined;
+
+    return diagnose(
+      latest ?? {
+        id: 0,
+        filter: described,
+        address: to?.trim().toLowerCase(),
+        startedAt: new Date().toISOString(),
+        found: false,
+        polls: [],
+      }
+    );
+  }
+
+  /**
+   * @description Diagnostics of the last `waitFor` calls (at most 50), oldest
+   * first; only those after `sinceId` when given.
+   */
+  function history(sinceId = 0): WaitDiagnostics[] {
+    return waits.filter((w) => w.id > sinceId).map(diagnose);
   }
 
   /**
@@ -276,6 +350,10 @@ export function createMailbox(options: MailboxOptions) {
     all: (): Mail[] => [...mails.values()],
     /** @description `meta` of the last successful poll (pop3-api >= 0.0.3). */
     meta: (): MailboxMeta | undefined => lastMeta,
+    diagnostics,
+    history,
+    /** @description Id of the latest `waitFor`, to read `history()` after it. */
+    lastWaitId: (): number => waitSeq,
     /** @description Forgets the stored mails. */
     clear: (): void => {
       mails.clear();

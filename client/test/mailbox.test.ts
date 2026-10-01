@@ -264,7 +264,7 @@ describe("createMailbox", () => {
 
     const error = await mailbox.waitFor({}, { interval: 1, timeout: 5 }).catch((e: Error) => e);
 
-    expect((error as Error).message).toEndWith("Last API error: boom");
+    expect((error as Error).message).toMatch(/\d+× "boom"/);
   });
 
   test("mails without uidl nor messageId are not merged", async () => {
@@ -283,20 +283,141 @@ describe("createMailbox", () => {
     await expect(mailbox.poll()).rejects.toBeInstanceOf(MailboxError);
   });
 
-  test("times out with a readable message", async () => {
-    const api = fakeApi([
-      ok(mail({ uidl: "1" }), mail({ uidl: "2", error: "Empty message" })),
-      { status: 502, body: { success: false, error: "socket closed" } },
+});
+
+describe("waitFor diagnostics", () => {
+  const to = "qa+abc@gmail.com";
+  const meta = (expired = 0) => ({ retained: 1, expired, lastPoll: null, retentionMs: 1_800_000 });
+  const wait = { interval: 1, timeout: 15 };
+
+  async function notFound(box: ReturnType<typeof createMailbox>, filter: Parameters<typeof box.waitFor>[0]) {
+    const error = await box.waitFor(filter, wait).catch((e: Error) => e);
+    expect(error).toBeInstanceOf(Error);
+    return (error as Error).message;
+  }
+
+  test("1. arrived with another subject", async () => {
+    const box = createMailbox({
+      ...options,
+      fetch: fakeApi([{ body: { success: true, data: [mail({ uidl: "1", to: [{ name: "", address: to }], subject: "Nueva plantilla" })], meta: meta() } }]).fetch,
+    });
+
+    const message = await notFound(box, { to, subject: /camino/ });
+
+    expect(message).toContain("Verdict: filter-mismatch");
+    expect(message).toContain(`Mails for ${to} (1):\n  - "Nueva plantilla" from no-reply@shop.cl to ${to}`);
+  });
+
+  test("2. arrived, but an earlier waitFor already took it", async () => {
+    const box = createMailbox({
+      ...options,
+      fetch: fakeApi([{ body: { success: true, data: [mail({ uidl: "1", to: [{ name: "", address: to }], subject: "En camino" })], meta: meta() } }]).fetch,
+    });
+    await box.waitFor({ to, subject: /camino/ }, wait);
+
+    const message = await notFound(box, { to, subject: /camino|despacho/ });
+
+    expect(message).toContain("Verdict: taken");
+    expect(message).toContain('  - [taken] "En camino"');
+  });
+
+  test("3. arrived unreadable (recipient read from its raw headers)", async () => {
+    const unreadable = { uidl: "1", error: "RETR failed: Message is unavailable", headers: `To: ${to}\r\nSubject: En camino`, subject: "En camino", attachments: [] };
+    const box = createMailbox({
+      ...options,
+      fetch: fakeApi([{ body: { success: true, data: [unreadable], meta: meta() } }]).fetch,
+    });
+
+    const message = await notFound(box, { to, subject: /camino/ });
+
+    expect(message).toContain("Verdict: unreadable");
+    expect(message).toContain('[unreadable: RETR failed: Message is unavailable] "En camino"');
+  });
+
+  test("4. never arrived, with every poll (and intermediate errors) listed", async () => {
+    const box = createMailbox({
+      ...options,
+      fetch: fakeApi([
+        { status: 504, body: { success: false, error: "POP3 server timed out after 30000ms" } },
+        { body: { success: true, data: [], meta: { ...meta(), retained: 0, lastPoll: { at: "2026-10-01T16:59:01.000Z", durationMs: 812, newMails: 3 } } } },
+      ]).fetch,
+    });
+
+    const message = await notFound(box, { to });
+
+    expect(message).toContain("Verdict: never-arrived");
+    expect(message).toMatch(/Polls: \d+ polls: \d+ ok \(0 with new mails\), 1 errors: 1× "pop3-api answered 504: POP3 server timed out after 30000ms" at \d\d:\d\d:\d\d\./);
+    expect(message).toContain("pop3-api: 0 retained, 0 expired for this address; last poll at 16:59:01 ok (812 ms, 3 new).");
+    expect(message).toContain(`Mails for ${to} (0): none`);
+  });
+
+  test("5. arrived, but expired in pop3-api before this waitFor asked", async () => {
+    const box = createMailbox({
+      ...options,
+      fetch: fakeApi([{ body: { success: true, data: [], meta: { ...meta(1), retained: 0 } } }]).fetch,
+    });
+
+    const message = await notFound(box, { to });
+
+    expect(message).toContain("Verdict: expired");
+    expect(message).toContain("0 retained, 1 expired for this address");
+  });
+
+  test("diagnostics never include bodies nor attachments", async () => {
+    const secret = mail({
+      uidl: "1",
+      to: [{ name: "", address: to }],
+      subject: "Tu código",
+      text: "Código 482913",
+      html: '<a href="https://shop.cl/verify?t=SECRET">',
+      attachments: [{ filename: "a.txt", mimeType: "text/plain", disposition: "attachment", content: "U0VDUkVU" }],
+    });
+    const box = createMailbox({ ...options, fetch: fakeApi([ok(secret)]).fetch });
+
+    const message = await notFound(box, { to, subject: /otro/ });
+    const json = JSON.stringify([box.diagnostics({ to, subject: /otro/ }), box.history()]);
+
+    for (const leaked of ["482913", "SECRET", "U0VDUkVU", "verify"]) {
+      expect(message).not.toContain(leaked);
+      expect(json).not.toContain(leaked);
+    }
+  });
+
+  test("diagnostics(filter) and history() expose the same data as an object", async () => {
+    const box = createMailbox({
+      ...options,
+      fetch: fakeApi([ok(mail({ uidl: "1", to: [{ name: "", address: to }], subject: "Bienvenido" }))]).fetch,
+    });
+    await box.waitFor({ to, subject: /bienvenid/i }, wait);
+    const before = box.lastWaitId();
+    await box.waitFor({ to, subject: /nunca/ }, wait).catch(() => {});
+
+    expect(box.diagnostics({ to, subject: /nunca/ })).toMatchObject({
+      filter: '{"to":"qa+abc@gmail.com","subject":"/nunca/"}',
+      address: to,
+      found: false,
+      verdict: "taken",
+      nearby: [{ uidl: "1", subject: "Bienvenido", taken: true, to: [to] }],
+    });
+    expect(box.history().map((w) => [w.found, w.verdict])).toEqual([
+      [true, "found"],
+      [false, "taken"],
     ]);
-    const mailbox = createMailbox({ ...options, fetch: api.fetch });
+    expect(box.history(before)).toHaveLength(1);
+  });
 
-    const error = await mailbox
-      .waitFor({ subject: /nunca/i }, { interval: 5, timeout: 20 })
-      .catch((e: Error) => e);
+  test("without an address it lists the last mails received", async () => {
+    const box = createMailbox({
+      ...options,
+      fetch: fakeApi([ok(...Array.from({ length: 12 }, (_, i) => mail({ uidl: String(i), subject: `M${i}` })))]).fetch,
+    });
 
-    expect((error as Error).message).toMatch(
-      /Mail not found after \d+s \(\d+ polls\)\.\nFilter: \{"subject":"\/nunca\/i"\}\nMailbox has 2 mails \(1 unreadable\)\.\nLast API error: pop3-api answered 502: socket closed/
-    );
+    const message = await notFound(box, { subject: /nunca/ });
+
+    expect(message).toContain("Verdict: no-match");
+    expect(message).toContain("Last mails received (10):");
+    expect(message).toContain('"M11"');
+    expect(message).not.toContain('"M1" ');
   });
 });
 

@@ -1,6 +1,6 @@
 import { test as base } from "@playwright/test";
 import { createMailbox, type Mail } from "pop3-api-client";
-import { mailboxFixture } from "pop3-api-client/playwright";
+import { mailboxFixture, type MailboxFixtures } from "pop3-api-client/playwright";
 
 const mail: Mail = {
   uidl: "1",
@@ -22,6 +22,21 @@ export const test = base.extend(
     fetch: fakeFetch,
   }))
 );
+
+// The form of a project with its own fixtures (like cleanqueen's base.fixture):
+// spread the mailbox fixtures and type the worker fixture.
+type OwnFixtures = { greeting: string };
+export const testWithOwnFixtures = base.extend<OwnFixtures, MailboxFixtures>({
+  ...mailboxFixture(() => ({
+    url: "http://pop3-api.test",
+    username: "tests@gmail.com",
+    password: "pw",
+    fetch: fakeFetch,
+  })),
+  greeting: async ({}, use) => {
+    await use("hola");
+  },
+});
 
 // The main entry point works on its own too.
 export const standalone = createMailbox({
