@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 
 import { config } from "../src/config";
@@ -22,7 +23,10 @@ type FakeOptions = {
 function fakeClient({ messages, sizes = [] }: FakeOptions) {
   const calls = { quit: 0, destroyed: 0, retr: [] as number[] };
 
-  const client: Pop3Client = {
+  const events = new EventEmitter();
+  const client: Pop3Client & { emit: EventEmitter["emit"] } = {
+    on: (event, listener) => events.on(event, listener),
+    emit: (event, ...args) => events.emit(event, ...args),
     UIDL: async () => messages.map((_, i) => [String(i + 1), `uid-${i + 1}`]),
     LIST: async () =>
       messages.map((_, i) => [String(i + 1), String(sizes[i] ?? 100)]),
@@ -183,6 +187,71 @@ describe("getMail", () => {
     expect(error!.message).toBe("Request aborted by the client");
     expect(calls.quit).toBe(0);
     expect(calls.destroyed).toBe(1);
+  });
+
+  test("a server that closes mid-session answers 502 right away", async () => {
+    const { client, calls } = fakeClient({ messages: [raw("Welcome")] });
+    client.RETR = () => {
+      const closed = Object.assign(new Error("close"), { eventName: "close" });
+      setTimeout(() => client.emit("warn", closed), 5);
+      return new Promise(() => {});
+    };
+
+    const start = Date.now();
+    const [error] = await getMail(credentials, () => client);
+
+    expect(error!.status).toBe(502);
+    expect(error!.message).toBe("POP3 server closed the connection");
+    expect(Date.now() - start).toBeLessThan(1_000);
+    expect(calls.quit).toBe(0);
+  });
+
+  test("the library idle timeout answers 504, not the close it causes", async () => {
+    const { client } = fakeClient({ messages: [raw("Welcome")] });
+    client.RETR = () => {
+      setTimeout(() => {
+        client.emit("warn", Object.assign(new Error("timeout"), { eventName: "timeout" }));
+        client.emit("warn", Object.assign(new Error("close"), { eventName: "close" }));
+      }, 5);
+      return new Promise(() => {});
+    };
+
+    const [error] = await getMail(credentials, () => client);
+
+    expect(error!.status).toBe(504);
+  });
+
+  test("a socket error is reported with its cause, not as the close it causes", async () => {
+    const { client } = fakeClient({ messages: [] });
+    client.UIDL = () => {
+      setTimeout(() => {
+        const dns = Object.assign(new Error("getaddrinfo ETIMEOUT pop.gmail.com"), {
+          eventName: "error",
+        });
+        client.emit("warn", dns);
+        client.emit("warn", Object.assign(new Error("close"), { eventName: "close" }));
+      }, 5);
+      return new Promise(() => {});
+    };
+
+    const [error] = await getMail(credentials, () => client);
+
+    expect(error!.status).toBe(502);
+    expect(error!.message).toBe("getaddrinfo ETIMEOUT pop.gmail.com");
+  });
+
+  test("the close that follows QUIT is not an error", async () => {
+    const { client, calls } = fakeClient({ messages: [raw("Welcome")] });
+    client.QUIT = async () => {
+      calls.quit++;
+      client.emit("warn", Object.assign(new Error("end"), { eventName: "end" }));
+      return "+OK";
+    };
+
+    const [error, mails] = await getMail(credentials, () => client);
+
+    expect(error).toBeNull();
+    expect(mails).toHaveLength(1);
   });
 
   test("a failed QUIT still returns the downloaded messages", async () => {
